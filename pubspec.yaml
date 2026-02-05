@@ -16,7 +16,7 @@ dependencies:
 
   # For Camera and ML
   camera: ^0.10.5+9
-  tflite_flutter: ^0.10.4
+  tflite_flutter: ^0.12.1
   image_picker: ^1.0.7 # Kept for potential gallery access
   image: ^4.1.7         # For image processing
 
