@@ -1,40 +1,51 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 
 class TfService {
   Interpreter? _interpreter;
   List<String>? _labels;
+  String? _loadedModelName;
 
   static const int inputSize = 224; // MobileNet standard input size
 
   Future<void> loadModel() async {
+    final candidates = [
+      'assets/models/mobilenet.tflite',
+      'assets/models/mobilenet_v2.tflite',
+      'assets/models/MobileNet-v2_w8a8.tflite',
+      'mobilenet.tflite',
+    ];
     try {
-      // 1. Load the model
-      _interpreter = await Interpreter.fromAsset(
-        'assets/models/mobilenet.tflite',
-      );
+      // Try candidates until one loads
+      for (final name in candidates) {
+        try {
+          _interpreter = await Interpreter.fromAsset(name);
+          _loadedModelName = name;
+          debugPrint('TfService: loaded model $name');
+          break;
+        } catch (_) {
+          // continue
+        }
+      }
+      if (_interpreter == null) throw Exception('No tflite model found in assets');
 
       // 2. Load the labels
       final labelData = await rootBundle.loadString('assets/models/labels.txt');
-      _labels = labelData.split('\n');
-
-      print("Model loaded successfully");
+      _labels = labelData.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+      debugPrint('TfService: loaded ${_labels?.length ?? 0} labels');
     } catch (e) {
-      print("Error loading model: $e");
+      debugPrint("Error loading model: $e");
     }
   }
-
-  Future<List<dynamic>> classifyImage(String imagePath) async {
+  /// Classify image bytes (useful when capturing from camera).
+  Future<List<dynamic>> classifyBytes(Uint8List imageData) async {
     if (_interpreter == null) return [];
 
-    // 1. Read image from disk
-    final imageData = File(imagePath).readAsBytesSync();
-
-    // 2. Decode and Resize
-    // We use the 'image' package to resize to 224x224
+    // Decode and resize
     img.Image? originalImage = img.decodeImage(imageData);
     if (originalImage == null) return [];
 
@@ -44,65 +55,77 @@ class TfService {
       height: inputSize,
     );
 
-    // 3. Convert image to Matrix (Input Tensor)
-    // [1, 224, 224, 3] -> 1 image, 224x224 pixels, 3 channels (RGB)
-    var input = List.generate(
+    // Build input tensor as nested Lists [1][H][W][3] with normalized floats
+    final input = List.generate(
       1,
-      (i) => List.generate(
+      (_) => List.generate(
         inputSize,
-        (y) => List.generate(inputSize, (x) {
-          final pixel = resizedImage.getPixel(x, y);
-          // For Quantized model (uint8), we use 0-255 directly.
-          // If using Float model, you must normalize ((val - 127.5) / 127.5)
-          return [pixel.r, pixel.g, pixel.b];
-        }),
+        (_) => List.generate(
+          inputSize,
+          (_) => List.filled(3, 0.0),
+        ),
       ),
     );
 
-    // 4. Output Tensor container
-    // MobileNet usually outputs 1001 probabilities
-    var output = List.filled(1 * 1001, 0).reshape([1, 1001]);
+    // Use raw pixel data array (avoids analyzer issues with getPixel/getBytes)
+    final dynamic pixels = resizedImage.data;
+    if (pixels == null) return [];
+    for (var y = 0; y < inputSize; y++) {
+      for (var x = 0; x < inputSize; x++) {
+        final int pIdx = y * inputSize + x;
+        final int pixel = pixels[pIdx];
+        final int r = (pixel >> 16) & 0xFF;
+        final int g = (pixel >> 8) & 0xFF;
+        final int b = pixel & 0xFF;
+        input[0][y][x][0] = (r - 127.5) / 127.5;
+        input[0][y][x][1] = (g - 127.5) / 127.5;
+        input[0][y][x][2] = (b - 127.5) / 127.5;
+      }
+    }
 
-    // 5. Run Inference
+    final labelsLen = _labels?.length ?? 1001;
+    final output = List.generate(1, (_) => List.filled(labelsLen, 0.0));
+
     _interpreter!.run(input, output);
 
-    // 6. Parse Results
-    // Find the index with the highest probability
-    var outputList = output[0] as List;
-    var maxScore = 0.0;
-    var maxIndex = 0;
-
-    for (int i = 0; i < outputList.length; i++) {
-      if (outputList[i] > maxScore) {
-        maxScore = outputList[i] + 0.0; // Ensure double
+    final results = (output[0] as List).map((e) => (e as num).toDouble()).toList();
+    double maxScore = -double.infinity;
+    int maxIndex = -1;
+    for (int i = 0; i < results.length; i++) {
+      if (results[i] > maxScore) {
+        maxScore = results[i];
         maxIndex = i;
       }
     }
 
-    // Return the top result
-    // if (_labels != null && maxIndex < _labels!.length) {
-    //   return [
-    //     {
-    //       "label": _labels![maxIndex],
-    //       "confidence": (maxScore / 255.0) * 100, // Convert uint8 score to %
-    //     },
-    //   ];
-    // }
-    // Return the top result
-    if (_labels != null && maxIndex < _labels!.length) {
+    // Normalize confidence: if model outputs >1 (e.g., 0-255 quantized), scale to 0..1
+    double normalized = 0.0;
+    if (maxScore.isFinite) {
+      if (maxScore > 1.01) {
+        normalized = (maxScore / 255.0).clamp(0.0, 1.0);
+      } else {
+        normalized = maxScore.clamp(0.0, 1.0);
+      }
+    }
+
+    if (maxIndex != -1 && _labels != null && maxIndex < _labels!.length) {
       return [
-        {
-          "label": _labels![maxIndex],
-          // Pastikan dikonversi ke double 0-100
-          "confidence": (maxScore / 255.0) * 100,
-        },
+        {"label": _labels![maxIndex], "confidence": normalized, "raw_score": maxScore},
       ];
     }
 
-    return [
-      {"label": "Unknown", "confidence": 0.0},
-    ];
+    return [{"label": "Unknown", "confidence": 0.0, "raw_score": maxScore}];
   }
+
+  Future<List<dynamic>> classifyImage(String imagePath) async {
+    final bytes = File(imagePath).readAsBytesSync();
+    return classifyBytes(Uint8List.fromList(bytes));
+  }
+
+  List<String>? getLabels() => _labels;
+  bool get isLoaded => _interpreter != null;
+
+  String? get loadedModelName => _loadedModelName;
 
   void close() {
     _interpreter?.close();

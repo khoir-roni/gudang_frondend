@@ -140,27 +140,26 @@ class _InventoryScreenState extends State<InventoryScreen> {
               ),
             ),
             const SizedBox(height: 10),
-            if (_searchHistory.isNotEmpty)
-              SizedBox(
-                height: 36,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  children: _searchHistory
-                      .map((s) => GestureDetector(
-                            onTap: () {
-                              _searchController.text = s;
-                              _performSearch(s);
-                            },
-                            child: Container(
-                              margin: const EdgeInsets.symmetric(horizontal: 6),
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(20)),
-                              child: Center(child: Text(s)),
-                            ),
-                          ))
-                      .toList(),
+              if (_searchHistory.isNotEmpty)
+                SizedBox(
+                  height: 40,
+                  child: ListView(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    scrollDirection: Axis.horizontal,
+                    children: _searchHistory
+                        .map((s) => Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                              child: ActionChip(
+                                label: Text(s, style: const TextStyle(fontSize: 13)),
+                                onPressed: () {
+                                  _searchController.text = s;
+                                  _performSearch(s);
+                                },
+                              ),
+                            ))
+                        .toList(),
+                  ),
                 ),
-              ),
             const SizedBox(height: 10),
             Expanded(
               child: _isLoading
@@ -171,18 +170,26 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           itemCount: _filtered.length,
                           itemBuilder: (context, idx) {
                             final t = _filtered[idx];
-                            return ListTile(
-                              title: Text(t.namaBarang),
-                              subtitle: Text('Jumlah: ${t.jumlah} • ${t.lemari} • ${t.lokasi}'),
-                              trailing: PopupMenuButton<String>(
-                                onSelected: (value) async {
-                                  if (value == 'edit') await _openForm(tool: t);
-                                  if (value == 'delete') await _deleteTool(t.id);
+                            return Card(
+                              margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                              child: ListTile(
+                                title: Text(t.namaBarang),
+                                subtitle: Text('Qty: ${t.jumlah} • ${t.lemari} • ${t.lokasi}'),
+                                trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.edit_outlined),
+                                    onPressed: () => _openForm(tool: t),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline),
+                                    onPressed: () => _deleteTool(t.id),
+                                  ),
+                                ]),
+                                onTap: () {
+                                  // quick search by tapping item name
+                                  _searchController.text = t.namaBarang;
+                                  _performSearch(t.namaBarang);
                                 },
-                                itemBuilder: (_) => const [
-                                  PopupMenuItem(value: 'edit', child: Text('Edit')),
-                                  PopupMenuItem(value: 'delete', child: Text('Delete')),
-                                ],
                               ),
                             );
                           },

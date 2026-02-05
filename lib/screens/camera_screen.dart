@@ -1,13 +1,14 @@
 
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // <--- PERBAIKAN: Import yang diperlukan ditambahkan
 import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:tflite_flutter/tflite_flutter.dart' as tflite;
-import 'package:image/image.dart' as img;
+import '../services/tf_service.dart';
+// tflite and image imports removed; processing handled in TfService
+
+const double kConfidenceThreshold = 0.4;
 
 // Enum untuk mengelola state UI
 enum CameraState {
@@ -29,8 +30,8 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   CameraState _cameraState = CameraState.initializing;
   CameraController? _cameraController;
-  tflite.Interpreter? _interpreter;
-  List<String>? _labels;
+  final TfService _tfService = TfService();
+  String? _modelName;
 
   @override
   void initState() {
@@ -41,14 +42,20 @@ class _CameraScreenState extends State<CameraScreen> {
   @override
   void dispose() {
     _cameraController?.dispose();
-    _interpreter?.close();
+    _tfService.close();
     super.dispose();
   }
 
   Future<void> _initialize() async {
     if (await Permission.camera.request().isGranted) {
       await _initializeCamera();
-      await _loadModel();
+      await _tfService.loadModel();
+      _modelName = _tfService.loadedModelName;
+      debugPrint('CameraScreen: model loaded: $_modelName');
+      if (!_tfService.isLoaded) {
+        if (mounted) setState(() => _cameraState = CameraState.permissionDenied);
+        return;
+      }
       if (mounted) setState(() => _cameraState = CameraState.ready);
     } else {
       if (mounted) setState(() => _cameraState = CameraState.permissionDenied);
@@ -61,93 +68,107 @@ class _CameraScreenState extends State<CameraScreen> {
     _cameraController = CameraController(cameras[0], ResolutionPreset.high, enableAudio: false);
     await _cameraController!.initialize();
   }
-
-  Future<void> _loadModel() async {
-    try {
-      final labelsData = await rootBundle.loadString('assets/models/labels.txt');
-      // PERBAIKAN: Menggunakan '\n' untuk memisahkan baris dengan benar
-      _labels = labelsData.split('\n').map((label) => label.trim()).where((label) => label.isNotEmpty).toList();
-      // Try several candidate model filenames found in the repo
-      final candidates = [
-        'assets/models/mobilenet_v2.tflite',
-        'assets/models/mobilenet.tflite',
-        'assets/models/MobileNet-v2_w8a8.tflite',
-        'mobilenet_v2.tflite',
-        'mobilenet.tflite',
-      ];
-      for (final name in candidates) {
-        try {
-          _interpreter = await tflite.Interpreter.fromAsset(name);
-          debugPrint('Loaded tflite model: $name');
-          break;
-        } catch (_) {
-          // try next
-        }
-      }
-      if (_interpreter == null) throw Exception('No model found in assets');
-    } catch (e) {
-      debugPrint("Gagal memuat model atau label: $e");
-    }
-  }
+  
 
   Future<void> _onTakePhoto() async {
-    if (_cameraController == null || _interpreter == null || !mounted) return;
+    if (_cameraController == null || !_tfService.isLoaded || !mounted) return;
     setState(() => _cameraState = CameraState.capturing);
     try {
       final XFile picture = await _cameraController!.takePicture();
       if (mounted) setState(() => _cameraState = CameraState.classifying);
       final Uint8List imageBytes = await picture.readAsBytes();
-      await _classifyImage(imageBytes);
+      final results = await _tfService.classifyBytes(imageBytes);
+      if (results.isNotEmpty) {
+        final label = (results[0]['label'] ?? '').toString();
+        final confidence = (results[0]['confidence'] ?? 0.0);
+        final raw = results[0]['raw_score'] ?? null;
+        debugPrint('Prediction: $label conf=$confidence raw=$raw');
+        if (mounted) await _showPredictionPreview(label, confidence as double);
+      } else {
+        if (mounted) setState(() => _cameraState = CameraState.resultNotFound);
+      }
     } catch (e) {
       debugPrint("Error saat mengambil atau mengklasifikasikan foto: $e");
       if (mounted) setState(() => _cameraState = CameraState.ready);
     }
   }
 
+  Future<void> _showPredictionPreview(String label, double confidence) async {
+    const threshold = kConfidenceThreshold;
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('Prediksi: $label', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text('Confidence: ${(confidence * 100).toStringAsFixed(1)}%'),
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    if (confidence >= threshold) context.go('/inventory?q=$label');
+                    setState(() => _cameraState = CameraState.ready);
+                  },
+                  child: const Text('Gunakan'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    _showManualEdit(label);
+                  },
+                  child: const Text('Edit'),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            TextButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  setState(() => _cameraState = CameraState.ready);
+                },
+                child: const Text('Batal')),
+            const SizedBox(height: 12),
+            if (_modelName != null) Text('Model: $_modelName', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          ]),
+        );
+      },
+    );
+  }
+
+  void _showManualEdit(String initial) {
+    final controller = TextEditingController(text: initial);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Edit Prediksi'),
+        content: TextField(controller: controller, decoration: const InputDecoration(labelText: 'Nama alat')),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Batal')),
+          ElevatedButton(
+            onPressed: () {
+              final q = controller.text.trim();
+              Navigator.of(ctx).pop();
+              if (q.isNotEmpty) context.go('/inventory?q=$q');
+              setState(() => _cameraState = CameraState.ready);
+            },
+            child: const Text('Cari'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _classifyImage(Uint8List imageBytes) async {
-    img.Image? originalImage = img.decodeImage(imageBytes);
-    if (originalImage == null || _labels == null || !mounted) return;
-    final modelInputSize = 224;
-    img.Image resizedImage = img.copyResize(originalImage, width: modelInputSize, height: modelInputSize);
-
-    // Build 4D input: [1][H][W][3]
-    final input = List.generate(1, (_) => List.generate(modelInputSize, (_) => List.generate(modelInputSize, (_) => List.filled(3, 0.0))));
-    for (var y = 0; y < modelInputSize; y++) {
-      for (var x = 0; x < modelInputSize; x++) {
-        final pixel = resizedImage.getPixel(x, y);
-        final r = img.getRed(pixel);
-        final g = img.getGreen(pixel);
-        final b = img.getBlue(pixel);
-        input[0][y][x][0] = (r - 127.5) / 127.5;
-        input[0][y][x][1] = (g - 127.5) / 127.5;
-        input[0][y][x][2] = (b - 127.5) / 127.5;
-      }
-    }
-
-    // Output buffer [1][labels]
-    final output = List.generate(1, (_) => List.filled(_labels!.length, 0.0));
-
-    _interpreter!.run(input, output);
-
-    final results = (output[0] as List).map((e) => (e as num).toDouble()).toList();
-    double maxConfidence = 0.0;
-    int maxIndex = -1;
-    for (int i = 0; i < results.length; i++) {
-      if (results[i] > maxConfidence) {
-        maxConfidence = results[i];
-        maxIndex = i;
-      }
-    }
-
-    if (maxConfidence >= 0.5 && maxIndex != -1) {
-      final topPredictionLabel = _labels![maxIndex];
-      if (mounted) {
-        context.go('/inventory?q=$topPredictionLabel');
-        setState(() => _cameraState = CameraState.ready);
-      }
-    } else {
-      if (mounted) setState(() => _cameraState = CameraState.resultNotFound);
-    }
+    // Removed: use `TfService.classifyBytes` instead.
+    return;
   }
 
   @override
@@ -170,7 +191,6 @@ class _CameraScreenState extends State<CameraScreen> {
       case CameraState.resultNotFound:
         return _buildCameraPreviewWithOverlay(_buildResultNotFoundUI());
       case CameraState.ready:
-      default:
         if (_cameraController == null || !_cameraController!.value.isInitialized) {
           return const Center(child: Text("Kamera tidak tersedia."));
         }
