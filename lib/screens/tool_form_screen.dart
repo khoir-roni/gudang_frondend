@@ -52,22 +52,25 @@ class _ToolFormScreenState extends State<ToolFormScreen> {
     if (_formKey.currentState!.validate()) {
       setState(() => _isLoading = true);
 
-      // Siapkan data untuk dikirim ke API
-      final toolData = {
-        'nama_barang': _namaController.text,
-        'jumlah': int.tryParse(_jumlahController.text) ?? 0,
-        'lemari': _lemariController.text,
-        'lokasi': _lokasiController.text,
-        'username': 'admin', // TODO: Ganti dengan username yang sedang login
-        'aksi': _selectedAction,
-      };
-
       try {
         if (_isEditing) {
-          // Jika editing, sertakan id jika backend memerlukannya
-          toolData['id'] = widget.tool!.id;
-          await _apiService.updateTool(toolData);
+          // Mode edit: Ambil barang (kurangi stok)
+          await _apiService.takeToolStock(
+            namaBarang: _namaController.text,
+            jumlahDiambil: int.tryParse(_jumlahController.text) ?? 0,
+            lemari: _lemariController.text,
+            lokasi: _lokasiController.text,
+            username: 'admin', // TODO: Ganti dengan username yang sedang login
+          );
         } else {
+          // Mode tambah: Tambah barang baru
+          final toolData = {
+            'nama_barang': _namaController.text,
+            'jumlah': int.tryParse(_jumlahController.text) ?? 0,
+            'lemari': _lemariController.text,
+            'lokasi': _lokasiController.text,
+            'username': 'admin', // TODO: Ganti dengan username yang sedang login
+          };
           await _apiService.addTool(toolData);
         }
 
@@ -78,7 +81,7 @@ class _ToolFormScreenState extends State<ToolFormScreen> {
         // Tampilkan pesan error jika gagal
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error: ${e.toString()}')),
+            SnackBar(content: Text('Error: $e')),
           );
         }
       } finally {
@@ -89,9 +92,12 @@ class _ToolFormScreenState extends State<ToolFormScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final title = _isEditing ? 'Ambil Barang' : 'Tambah Barang';
+    final buttonLabel = _isEditing ? 'Ambil' : 'Tambah';
+    
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isEditing ? 'Edit Barang' : 'Tambah Barang'),
+        title: Text(title),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -106,7 +112,9 @@ class _ToolFormScreenState extends State<ToolFormScreen> {
               ),
               TextFormField(
                 controller: _jumlahController,
-                decoration: const InputDecoration(labelText: 'Jumlah'),
+                decoration: InputDecoration(
+                  labelText: _isEditing ? 'Jumlah yang diambil' : 'Jumlah',
+                ),
                 keyboardType: TextInputType.number,
                 validator: (value) {
                   if (value!.isEmpty) return 'Jumlah tidak boleh kosong';
@@ -124,16 +132,6 @@ class _ToolFormScreenState extends State<ToolFormScreen> {
                 decoration: const InputDecoration(labelText: 'Lokasi / Ruangan'),
                 validator: (value) => value!.isEmpty ? 'Lokasi tidak boleh kosong' : null,
               ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                value: _selectedAction,
-                decoration: const InputDecoration(labelText: 'Aksi'),
-                items: const [
-                  DropdownMenuItem(value: 'taruh', child: Text('Taruh')),
-                  DropdownMenuItem(value: 'ambil', child: Text('Ambil')),
-                ],
-                onChanged: (v) => setState(() => _selectedAction = v ?? 'taruh'),
-              ),
               const SizedBox(height: 24),
               _isLoading
                   ? const Center(child: CircularProgressIndicator())
@@ -142,10 +140,12 @@ class _ToolFormScreenState extends State<ToolFormScreen> {
                         final confirm = await showDialog<bool>(
                           context: context,
                           builder: (ctx) => AlertDialog(
-                            title: Text(_isEditing ? 'Konfirmasi Edit' : 'Konfirmasi Tambah'),
-                            content: Text(_isEditing
-                                ? 'Simpan perubahan untuk "${_namaController.text}"?'
-                                : 'Tambah barang "${_namaController.text}" dengan aksi "${_selectedAction}"?'),
+                            title: Text(_isEditing ? 'Konfirmasi Ambil' : 'Konfirmasi Tambah'),
+                            content: Text(
+                              _isEditing
+                                  ? 'Ambil ${_jumlahController.text}x "${_namaController.text}"?'
+                                  : 'Tambah "${_namaController.text}" sebanyak ${_jumlahController.text}?',
+                            ),
                             actions: [
                               TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Batal')),
                               ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Ya')),
@@ -156,7 +156,7 @@ class _ToolFormScreenState extends State<ToolFormScreen> {
                           await _submitForm();
                         }
                       },
-                      child: Text(_isEditing ? 'Simpan Perubahan' : 'Tambah Barang'),
+                      child: Text(buttonLabel),
                     ),
             ],
           ),

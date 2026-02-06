@@ -26,7 +26,7 @@ void main() {
   });
 
   test('toolsFromJson parses list', () {
-    final jsonStr = '[{"id":2,"nama_barang":"Pal","jumlah":3,"lemari":"B2","lokasi":"Gudang 2"}]';
+    const jsonStr = '[{"id":2,"nama_barang":"Pal","jumlah":3,"lemari":"B2","lokasi":"Gudang 2"}]';
     final list = toolsFromJson(jsonStr);
     expect(list, isA<List<Tool>>());
     expect(list.length, 1);
