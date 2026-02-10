@@ -198,6 +198,16 @@ class _LoginScreenState extends State<LoginScreen> {
                             _useNgrok = value;
                             ApiConfig.useNgrok = value;
                           });
+
+                          // Tampilkan feedback URL yang aktif
+                          final mode =
+                              value ? "Internet (Ngrok)" : "Local (Emulator)";
+                          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                                content: Text(
+                                    'Mode: $mode\nURL: ${ApiConfig.baseUrl}')),
+                          );
                         },
                       ),
                       Text(

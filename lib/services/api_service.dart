@@ -151,6 +151,10 @@ class ApiService {
 
   Future<String> login(String username, String password) async {
     final uri = Uri.parse('$baseUrl/login');
+
+    print('==== LOGIN ATTEMPT ====');
+    print('Target URL: $uri');
+
     final res = await http
         .post(uri,
             headers: _headers,
